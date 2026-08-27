@@ -13,6 +13,7 @@ import {
   User,
   LogIn,
   ChevronRight,
+  ChevronLeft,
   Menu,
   X,
   Film,
@@ -20,6 +21,19 @@ import {
   LoaderCircle,
   Plus,
   Tv,
+  RotateCcw,
+  Maximize2,
+  Minimize2,
+  Sparkles,
+  Check,
+  Info,
+  ShieldCheck,
+  Video,
+  Clapperboard,
+  Star,
+  Clock,
+  Calendar,
+  Layers,
 } from "lucide-react";
 import {
   getMovie,
@@ -30,6 +44,7 @@ import {
   getTV,
   searchMulti,
   tmdbImage,
+  getOfficialTrailerUrl,
 } from "./lib/tmdb";
 import { authConfigured, signInWithProvider, supabase } from "./lib/supabase";
 import { SERVERS, getEmbedUrl } from "./data/sources";
@@ -249,9 +264,9 @@ function Layout({ children }) {
       <footer>
         <div>
           <b>MovieVerse</b>
-          <span> A modern movie &amp; TV discovery experience.</span>
+          <span> A modern high-definition movie &amp; TV discovery experience.</span>
         </div>
-        <small>Metadata powered by TMDB.</small>
+        <small>Metadata powered by TMDB. Streams provided by external CDN nodes.</small>
       </footer>
     </div>
   );
@@ -262,10 +277,11 @@ function Loader() {
   return (
     <div className="loader">
       <LoaderCircle className="spin" size={34} />
-      <span>Loading...</span>
+      <span>Loading content...</span>
     </div>
   );
 }
+
 function Notice({ text }) {
   return (
     <div className="notice">
@@ -290,11 +306,12 @@ function MediaCard({ item }) {
         <div className="poster-overlay">
           <Play fill="white" size={24} />
         </div>
+        <span className="card-quality-badge">HD</span>
       </div>
       <div className="card-title">{title}</div>
       <div className="card-meta">
         {(item.release_date || item.first_air_date || "").slice(0, 4)}{" "}
-        {item.vote_average ? `• ${item.vote_average.toFixed(1)}` : ""}
+        {item.vote_average ? `• ★ ${item.vote_average.toFixed(1)}` : ""}
       </div>
     </Link>
   );
@@ -331,19 +348,21 @@ function Hero({ item }) {
     <section
       className="hero"
       style={{
-        backgroundImage: `linear-gradient(90deg,#08090d 0%,rgba(8,9,13,.78) 42%,rgba(8,9,13,.12) 100%),linear-gradient(0deg,#08090d 0%,transparent 35%),url(${tmdbImage(item.backdrop_path, "original")})`,
+        backgroundImage: `linear-gradient(90deg,#08090d 0%,rgba(8,9,13,.82) 42%,rgba(8,9,13,.15) 100%),linear-gradient(0deg,#08090d 0%,transparent 40%),url(${tmdbImage(item.backdrop_path, "original")})`,
       }}
     >
       <div className="hero-content">
-        <div className="eyebrow">Featured today</div>
+        <div className="eyebrow flex-gap">
+          <Sparkles size={13} /> Featured in 4K Ultra HD
+        </div>
         <h1>{item.title || item.name}</h1>
-        <p>{item.overview || "Discover something great to watch."}</p>
+        <p>{item.overview || "Discover something great to watch in 4K and Full HD."}</p>
         <div className="hero-actions">
           <Link className="primary-btn" to={`/watch/${type}/${item.id}`}>
-            <Play fill="currentColor" size={18} /> Watch now
+            <Play fill="currentColor" size={18} /> Stream Now
           </Link>
           <Link className="ghost-btn" to={`/watch/${type}/${item.id}`}>
-            Details
+            Details &amp; Quality
           </Link>
         </div>
       </div>
@@ -376,7 +395,7 @@ function Home() {
       <div className="container">
         {error && <Notice text={error} />}
         <Section title="Trending This Week" items={data.trending} />
-        <Section title="Popular Movies" items={data.movies} />
+        <Section title="Popular Movies (4K / 1080p)" items={data.movies} />
         <Section title="Popular TV Shows" items={data.tv} type="tv" />
       </div>
     </>
@@ -461,17 +480,32 @@ function SearchPage() {
 }
 
 /* ─── Embed player ───────────────────────────────────────────────────────── */
-function EmbedPlayer({ url }) {
+function EmbedPlayer({ url, reloadKey, isTrailer = false }) {
+  const [isIframeLoading, setIsIframeLoading] = useState(true);
+
+  useEffect(() => {
+    setIsIframeLoading(true);
+  }, [url, reloadKey]);
+
   return (
-    <iframe
-      key={url}
-      className="video"
-      src={url}
-      allowFullScreen
-      allow="autoplay; fullscreen; picture-in-picture"
-      referrerPolicy="origin"
-      title="Video player"
-    />
+    <div className="player-wrapper">
+      {isIframeLoading && (
+        <div className="player-loading-spinner">
+          <LoaderCircle size={38} className="spin" />
+          <span>Connecting to High-Speed Video Stream...</span>
+        </div>
+      )}
+      <iframe
+        key={`${url}-${reloadKey}`}
+        className={`video ${isIframeLoading ? "loading" : "ready"}`}
+        src={url}
+        allowFullScreen
+        allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+        referrerPolicy="origin-when-cross-origin"
+        onLoad={() => setIsIframeLoading(false)}
+        title={isTrailer ? "Official HD Trailer" : "MovieVerse Video Player"}
+      />
+    </div>
   );
 }
 
@@ -486,13 +520,17 @@ function WatchPage() {
   const [episode, setEpisode] = useState(1);
   const [seasonData, setSeasonData] = useState(null);
 
-  // Server selection
+  // Server & Player controls
   const [serverIdx, setServerIdx] = useState(0);
+  const [reloadKey, setReloadKey] = useState(0);
+  const [theaterMode, setTheaterMode] = useState(false);
+  const [isTrailerActive, setIsTrailerActive] = useState(false);
 
   // Fetch media metadata
   useEffect(() => {
     setMedia(null);
     setError("");
+    setIsTrailerActive(false);
     (type === "tv" ? getTV(id) : getMovie(id))
       .then(setMedia)
       .catch((e) => setError(e.message));
@@ -521,84 +559,356 @@ function WatchPage() {
     );
   if (!media) return <Loader />;
 
-  const embedUrl = getEmbedUrl({ type, id, season, episode, serverIndex: serverIdx });
+  const imdbId = media.external_ids?.imdb_id || media.imdb_id;
+  const currentServer = SERVERS[serverIdx] || SERVERS[0];
+  const trailerUrl = getOfficialTrailerUrl(media.videos);
+
+  const embedUrl = isTrailerActive && trailerUrl
+    ? trailerUrl
+    : getEmbedUrl({
+        type,
+        id,
+        imdbId,
+        season,
+        episode,
+        serverIndex: serverIdx,
+      });
+
   const title = media.title || media.name;
+  const releaseYear = (media.release_date || media.first_air_date || "").slice(0, 4);
+  const runtime = media.runtime
+    ? `${Math.floor(media.runtime / 60)}h ${media.runtime % 60}m`
+    : media.episode_run_time?.length
+    ? `${media.episode_run_time[0]}m/ep`
+    : null;
+  const genres = media.genres?.map((g) => g.name).join(", ");
+  const rating = media.vote_average ? media.vote_average.toFixed(1) : null;
+  const cast = media.credits?.cast?.slice(0, 6) || [];
+  const recommendations = media.recommendations?.results?.slice(0, 6) || [];
+
+  // TV episode handlers
+  const totalEpisodesInSeason = seasonData?.episodes?.length || 0;
+  const hasPrevEp = type === "tv" && (episode > 1 || season > 1);
+  const hasNextEp =
+    type === "tv" &&
+    (episode < totalEpisodesInSeason || season < (media.number_of_seasons || 1));
+
+  function handlePrevEpisode() {
+    if (episode > 1) {
+      setEpisode(episode - 1);
+    } else if (season > 1) {
+      setSeason(season - 1);
+      setEpisode(1);
+    }
+  }
+
+  function handleNextEpisode() {
+    if (episode < totalEpisodesInSeason) {
+      setEpisode(episode + 1);
+    } else if (season < (media.number_of_seasons || 1)) {
+      setSeason(season + 1);
+      setEpisode(1);
+    }
+  }
+
+  function handleNextServer() {
+    setServerIdx((prev) => (prev + 1) % SERVERS.length);
+    setIsTrailerActive(false);
+  }
+
+  function handleReloadStream() {
+    setReloadKey((prev) => prev + 1);
+  }
 
   return (
-    <div className="container page watch-page">
-      {/* ── Player ── */}
-      <div className="player-shell">
-        <EmbedPlayer url={embedUrl} />
-      </div>
+    <div className={`watch-page-wrapper ${theaterMode ? "theater-active" : ""}`}>
+      <div className={`container page watch-page ${theaterMode ? "theater-container" : ""}`}>
+        {/* ── Player Toolbar ── */}
+        <div className="player-top-bar">
+          <div className="player-meta-left">
+            <span className={`quality-badge-pill ${currentServer.badgeClass}`}>
+              {isTrailerActive ? "Official Trailer" : currentServer.badge}
+            </span>
+            <span className="player-server-name">
+              {isTrailerActive ? "YouTube 4K/HD Trailer" : currentServer.name}
+            </span>
+            {!isTrailerActive && currentServer.recommended && (
+              <span className="recommended-tag">
+                <Sparkles size={12} /> Best Quality
+              </span>
+            )}
+          </div>
 
-      <div className="watch-controls">
-        {/* Title & overview */}
-        <div className="watch-title">
-          <h1>{title}</h1>
-          {type === "tv" && (
-            <div className="ep-label">
-              Season {season} · Episode {episode}
-            </div>
-          )}
-          <p>{media.overview}</p>
-        </div>
-
-        {/* Server switcher */}
-        <div className="server-panel">
-          <b>Servers</b>
-          <div className="server-buttons">
-            {SERVERS.map((s, i) => (
+          <div className="player-actions-right">
+            {/* Trailer toggle */}
+            {trailerUrl && (
               <button
-                key={s.name}
-                className={serverIdx === i ? "server active" : "server"}
-                onClick={() => setServerIdx(i)}
+                className={`player-tool-btn ${isTrailerActive ? "active" : ""}`}
+                onClick={() => setIsTrailerActive((v) => !v)}
+                title="Watch Official HD Trailer"
               >
-                {s.name}
+                <Clapperboard size={15} />
+                <span>{isTrailerActive ? "Back to Stream" : "Official Trailer"}</span>
               </button>
-            ))}
+            )}
+
+            {/* Quick Next Server */}
+            {!isTrailerActive && (
+              <button
+                className="player-tool-btn"
+                onClick={handleNextServer}
+                title="Switch to next streaming server"
+              >
+                <Layers size={15} />
+                <span>Next Server ({serverIdx + 1}/{SERVERS.length})</span>
+              </button>
+            )}
+
+            {/* Reload Stream */}
+            <button
+              className="player-tool-btn"
+              onClick={handleReloadStream}
+              title="Reload video stream"
+            >
+              <RotateCcw size={15} />
+              <span>Reload</span>
+            </button>
+
+            {/* Theater Mode */}
+            <button
+              className={`player-tool-btn ${theaterMode ? "active" : ""}`}
+              onClick={() => setTheaterMode((v) => !v)}
+              title={theaterMode ? "Exit Theater Mode" : "Theater Mode"}
+            >
+              {theaterMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              <span>Theater</span>
+            </button>
           </div>
         </div>
 
-        {/* TV episodes */}
-        {type === "tv" && media.number_of_seasons > 0 && (
-          <div className="episodes">
-            <div className="episode-top">
-              <b>Episodes</b>
-              <select
-                value={season}
-                onChange={(e) => {
-                  setSeason(+e.target.value);
-                  setEpisode(1);
-                }}
-              >
-                {Array.from({ length: media.number_of_seasons }, (_, i) => (
-                  <option key={i + 1} value={i + 1}>
-                    Season {i + 1}
-                  </option>
-                ))}
-              </select>
+        {/* ── Player Frame ── */}
+        <div className="player-shell">
+          <EmbedPlayer
+            url={embedUrl}
+            reloadKey={reloadKey}
+            isTrailer={isTrailerActive}
+          />
+        </div>
+
+        {/* ── Episode navigation toolbar for TV ── */}
+        {type === "tv" && (
+          <div className="episode-nav-bar">
+            <button
+              className="ep-nav-btn"
+              onClick={handlePrevEpisode}
+              disabled={!hasPrevEp}
+            >
+              <ChevronLeft size={16} /> Previous Episode
+            </button>
+            <div className="ep-nav-indicator">
+              Season {season} · Episode {episode}
+              {seasonData?.episodes?.find((e) => e.episode_number === episode)?.name
+                ? ` — "${seasonData.episodes.find((e) => e.episode_number === episode).name}"`
+                : ""}
             </div>
-            <div className="episode-grid">
-              {seasonData?.episodes?.map((ep) => (
-                <button
-                  key={ep.id}
-                  className={
-                    episode === ep.episode_number
-                      ? "episode active-ep"
-                      : "episode"
-                  }
-                  onClick={() => setEpisode(ep.episode_number)}
-                >
-                  <span>{ep.episode_number}</span>
-                  <div>
-                    <b>{ep.name}</b>
-                    <small>{ep.overview || "No episode description."}</small>
-                  </div>
-                </button>
-              ))}
-            </div>
+            <button
+              className="ep-nav-btn"
+              onClick={handleNextEpisode}
+              disabled={!hasNextEp}
+            >
+              Next Episode <ChevronRight size={16} />
+            </button>
           </div>
         )}
+
+        <div className="watch-controls">
+          {/* Quality highlight banner */}
+          <div className="quality-advisory-card">
+            <div className="advisory-icon">
+              <ShieldCheck size={20} />
+            </div>
+            <div className="advisory-text">
+              <b>High-Definition Stream Engine</b>
+              <span>
+                {currentServer.name} is streaming in <b>{currentServer.quality}</b> with adaptive bitrate.
+                If you encounter slow buffering or low resolution, switch to <b>Server 1 (VidLink)</b> or <b>Server 2 (VidSrc PRO)</b> for instant 4K/1080p playback.
+              </span>
+            </div>
+          </div>
+
+          {/* Title & Overview */}
+          <div className="watch-title-header">
+            <div className="watch-title-main">
+              <h1>{title}</h1>
+              <div className="media-tags-row">
+                <span className="media-tag-pill highlight">4K Ultra HD</span>
+                <span className="media-tag-pill highlight">1080p FHD</span>
+                <span className="media-tag-pill">Dolby 5.1</span>
+                <span className="media-tag-pill">Multi-Subs</span>
+                {releaseYear && (
+                  <span className="media-meta-item">
+                    <Calendar size={14} /> {releaseYear}
+                  </span>
+                )}
+                {runtime && (
+                  <span className="media-meta-item">
+                    <Clock size={14} /> {runtime}
+                  </span>
+                )}
+                {rating && (
+                  <span className="media-rating-pill">
+                    <Star size={14} fill="#fbbf24" color="#fbbf24" /> {rating}
+                  </span>
+                )}
+              </div>
+              {genres && <div className="genre-label">{genres}</div>}
+              <p className="media-synopsis">{media.overview || "No overview available."}</p>
+            </div>
+          </div>
+
+          {/* Server Switcher Grid */}
+          <div className="server-panel">
+            <div className="server-panel-header">
+              <div>
+                <b>Streaming Servers &amp; Video Quality</b>
+                <span className="server-panel-subtitle">
+                  Choose a high-speed server below for optimum video resolution &amp; audio.
+                </span>
+              </div>
+              <span className="server-count-badge">
+                {SERVERS.length} Servers Active
+              </span>
+            </div>
+
+            <div className="server-grid">
+              {SERVERS.map((s, i) => {
+                const isActive = serverIdx === i && !isTrailerActive;
+                return (
+                  <button
+                    key={s.id || s.name}
+                    className={`server-card ${isActive ? "active" : ""}`}
+                    onClick={() => {
+                      setServerIdx(i);
+                      setIsTrailerActive(false);
+                    }}
+                  >
+                    <div className="server-card-top">
+                      <span className="server-number-name">{s.name}</span>
+                      <span className={`server-card-badge ${s.badgeClass}`}>
+                        {s.badge}
+                      </span>
+                    </div>
+                    <div className="server-card-desc">
+                      <span>{s.tag}</span>
+                      {isActive && (
+                        <span className="active-dot">
+                          <Check size={12} /> Streaming
+                        </span>
+                      )}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Cast members */}
+          {cast.length > 0 && (
+            <div className="cast-section">
+              <b>Featured Cast</b>
+              <div className="cast-row">
+                {cast.map((c) => (
+                  <div key={c.id} className="cast-card">
+                    <img
+                      src={tmdbImage(c.profile_path, "w185") || fallback}
+                      alt={c.name}
+                      className="cast-avatar"
+                    />
+                    <div className="cast-info">
+                      <div className="cast-name">{c.name}</div>
+                      <div className="cast-char">{c.character}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* TV Episodes Selection */}
+          {type === "tv" && media.number_of_seasons > 0 && (
+            <div className="episodes">
+              <div className="episode-top">
+                <div>
+                  <b>Season Episodes</b>
+                  <span className="episode-season-count">
+                    {media.number_of_seasons} {media.number_of_seasons === 1 ? "Season" : "Seasons"} Available
+                  </span>
+                </div>
+                <select
+                  value={season}
+                  onChange={(e) => {
+                    setSeason(+e.target.value);
+                    setEpisode(1);
+                  }}
+                  className="season-select"
+                >
+                  {Array.from({ length: media.number_of_seasons }, (_, i) => (
+                    <option key={i + 1} value={i + 1}>
+                      Season {i + 1}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="episode-grid">
+                {seasonData?.episodes?.map((ep) => {
+                  const isCurrent = episode === ep.episode_number;
+                  return (
+                    <button
+                      key={ep.id}
+                      className={`episode ${isCurrent ? "active-ep" : ""}`}
+                      onClick={() => setEpisode(ep.episode_number)}
+                    >
+                      <div className="ep-num-box">
+                        <span>{ep.episode_number}</span>
+                      </div>
+                      <div className="ep-details">
+                        <div className="ep-header-row">
+                          <b className="ep-title">{ep.name}</b>
+                          {ep.vote_average > 0 && (
+                            <span className="ep-rating">
+                              ★ {ep.vote_average.toFixed(1)}
+                            </span>
+                          )}
+                        </div>
+                        <small className="ep-desc">
+                          {ep.overview || "No episode summary provided."}
+                        </small>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Recommendations */}
+          {recommendations.length > 0 && (
+            <div className="section recommendations-section">
+              <div className="section-head">
+                <h2>Recommended For You</h2>
+              </div>
+              <div className="card-row">
+                {recommendations.map((item) => (
+                  <MediaCard
+                    key={`${item.media_type || type}-${item.id}`}
+                    item={item}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
