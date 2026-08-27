@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import {
   Link,
   Route,
@@ -50,18 +50,166 @@ function useAuth() {
   return session;
 }
 
+/* ─── Navigation Live Search ─────────────────────────────────────────── */
+function NavSearch() {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState([]);
+  const [isOpen, setIsOpen] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const wrapperRef = useRef(null);
+  const navigate = useNavigate();
+
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    function handleClickOutside(event) {
+      if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
+        setIsOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // Debounced TMDB multi-search
+  useEffect(() => {
+    const trimmed = query.trim();
+    if (!trimmed) {
+      setResults([]);
+      setIsOpen(false);
+      setLoading(false);
+      return;
+    }
+
+    setLoading(true);
+    setIsOpen(true);
+    const timer = setTimeout(() => {
+      searchMulti(trimmed)
+        .then((res) => {
+          const items = (res.results || [])
+            .filter(
+              (item) =>
+                item.media_type === "movie" ||
+                item.media_type === "tv" ||
+                (!item.media_type && (item.title || item.name))
+            )
+            .slice(0, 7);
+          setResults(items);
+        })
+        .catch(() => setResults([]))
+        .finally(() => setLoading(false));
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  function handleSubmit(e) {
+    if (e) e.preventDefault();
+    if (query.trim()) {
+      setIsOpen(false);
+      navigate(`/search?q=${encodeURIComponent(query.trim())}`);
+    }
+  }
+
+  function handleSelect(item) {
+    const type = item.media_type || (item.first_air_date ? "tv" : "movie");
+    setIsOpen(false);
+    setQuery("");
+    navigate(`/watch/${type}/${item.id}`);
+  }
+
+  return (
+    <div className="nav-search-container" ref={wrapperRef}>
+      <form className="search" onSubmit={handleSubmit}>
+        <Search size={18} />
+        <input
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+          onFocus={() => {
+            if (query.trim() && results.length > 0) setIsOpen(true);
+          }}
+          placeholder="Search movies, shows..."
+        />
+        {loading ? (
+          <LoaderCircle size={16} className="spin search-loading-icon" />
+        ) : query ? (
+          <button
+            type="button"
+            className="search-clear-btn"
+            onClick={() => {
+              setQuery("");
+              setResults([]);
+              setIsOpen(false);
+            }}
+          >
+            <X size={15} />
+          </button>
+        ) : null}
+      </form>
+
+      {isOpen && (
+        <div className="search-dropdown">
+          {loading && results.length === 0 ? (
+            <div className="search-status">
+              <LoaderCircle size={16} className="spin" /> Searching...
+            </div>
+          ) : results.length > 0 ? (
+            <>
+              <div className="search-results-list">
+                {results.map((item) => {
+                  const type =
+                    item.media_type || (item.first_air_date ? "tv" : "movie");
+                  const title = item.title || item.name;
+                  const year = (
+                    item.release_date || item.first_air_date || ""
+                  ).slice(0, 4);
+                  return (
+                    <div
+                      key={`${type}-${item.id}`}
+                      className="search-result-item"
+                      onClick={() => handleSelect(item)}
+                    >
+                      <img
+                        src={tmdbImage(item.poster_path, "w92") || fallback}
+                        alt={title}
+                        className="search-result-thumb"
+                      />
+                      <div className="search-result-info">
+                        <div className="search-result-title">{title}</div>
+                        <div className="search-result-meta">
+                          <span className={`search-badge ${type}`}>
+                            {type === "tv" ? "TV Series" : "Movie"}
+                          </span>
+                          {year && <span>{year}</span>}
+                          {item.vote_average > 0 && (
+                            <span className="search-rating">
+                              ★ {item.vote_average.toFixed(1)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="search-view-all" onClick={handleSubmit}>
+                View all results for &ldquo;{query}&rdquo; &rarr;
+              </div>
+            </>
+          ) : (
+            <div className="search-status">
+              No movies or shows found for &ldquo;{query}&rdquo;
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ─── Layout ─────────────────────────────────────────────────────────────── */
 function Layout({ children }) {
   const session = useAuth();
   const [menu, setMenu] = useState(false);
-  const [query, setQuery] = useState("");
-  const navigate = useNavigate();
-
-  function submit(e) {
-    e.preventDefault();
-    if (query.trim())
-      navigate(`/search?q=${encodeURIComponent(query.trim())}`);
-  }
 
   async function logout() {
     if (supabase) await supabase.auth.signOut();
@@ -81,14 +229,7 @@ function Layout({ children }) {
             <Link to="/profile" onClick={() => setMenu(false)}>My List</Link>
           )}
         </nav>
-        <form className="search" onSubmit={submit}>
-          <Search size={18} />
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search movies, shows..."
-          />
-        </form>
+        <NavSearch />
         <div className="account-actions">
           {session ? (
             <button className="avatar-btn" title="Sign out" onClick={logout}>
