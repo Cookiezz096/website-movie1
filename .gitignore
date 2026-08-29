@@ -1,8 +1,14 @@
+node_modules
 node_modules/
+dist
 dist/
+my-vite-app/node_modules
+my-vite-app/dist
+my-vite-app/.vite
 .env
 .env.*
 !.env.example
+.env.local
 .vscode/*
 !.vscode/extensions.json
 .DS_Store

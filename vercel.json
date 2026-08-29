@@ -1,4 +1,6 @@
 {
+  "buildCommand": "npm --prefix my-vite-app install && npm --prefix my-vite-app run build",
+  "outputDirectory": "my-vite-app/dist",
   "rewrites": [
     {
       "source": "/(.*)",
