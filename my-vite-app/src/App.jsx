@@ -256,7 +256,7 @@ function Layout({ children }) {
     <div className="app-shell">
       <header className="topbar">
         <Link className="brand" to="/">
-          <span className="brand-mark">M</span> Movie<span>Verse</span>
+          <span className="brand-mark">A</span> Ani<span>kai</span>
         </Link>
         <nav className={menu ? "nav open" : "nav"}>
           <Link to="/" onClick={() => setMenu(false)}>Home</Link>
@@ -285,8 +285,8 @@ function Layout({ children }) {
       <main>{children}</main>
       <footer>
         <div>
-          <b>MovieVerse</b>
-          <span> Stream high-definition movies &amp; series with fast servers.</span>
+          <b>Anikai</b>
+          <span> Stream anime, movies &amp; series in HD with multi-server support.</span>
         </div>
         <small>Metadata powered by TMDB.</small>
       </footer>
@@ -452,6 +452,7 @@ function Home() {
   const [data, setData] = useState({ trending: [], movies: [], tv: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useEffect(() => { document.title = "Anikai - Watch Anime & Movies"; }, []);
   useEffect(() => {
     Promise.all([getTrending(), getPopularMovies(), getPopularTV()])
       .then(([t, m, tv]) =>
@@ -830,6 +831,13 @@ function WatchPage() {
   }
 
   const title = media.title || media.name;
+  // Update browser tab title with Anikai branding
+  useEffect(() => {
+    if (title) {
+      document.title = `${title} - Anikai`;
+    }
+    return () => { document.title = "Anikai - Watch Anime & Movies"; };
+  }, [title]);
   const releaseYear = (
     media.release_date ||
     media.first_air_date ||
@@ -1271,7 +1279,7 @@ function Login() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="brand big">
-          <span className="brand-mark">M</span> Movie<span>Verse</span>
+          <span className="brand-mark">A</span> Ani<span>kai</span>
         </div>
         <h1>Welcome back</h1>
         <p>Sign in to keep your list and watch history.</p>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import {
   Link,
   Route,
@@ -16,7 +16,6 @@ import {
   ChevronLeft,
   Menu,
   X,
-  Film,
   AlertCircle,
   LoaderCircle,
   Plus,
@@ -26,14 +25,13 @@ import {
   Minimize2,
   Sparkles,
   Check,
-  Info,
-  ShieldCheck,
-  Video,
   Clapperboard,
   Star,
   Clock,
   Calendar,
   Layers,
+  Server,
+  WifiOff,
 } from "lucide-react";
 import {
   getMovie,
@@ -47,9 +45,35 @@ import {
   getOfficialTrailerUrl,
 } from "./lib/tmdb";
 import { authConfigured, signInWithProvider, supabase } from "./lib/supabase";
-import { SERVERS, getEmbedUrl } from "./data/sources";
+import { getEmbedUrl, isServerPlayable, getSourceHealthKey } from "./data/sources";
+import { reportRuntimePlaybackIssue, getSourceHealth } from "./data/serverHealthService";
+import EnhancedEmbedPlayer from "./components/EnhancedEmbedPlayer";
+import AutoNextOverlay from "./components/AutoNextOverlay";
+import SkipTimingsOverlay from "./components/SkipTimingsOverlay";
+import { rankSources, getBestSourceIndex } from "./utils/serverRanking";
+import {
+  getWatchProgress,
+  setPreferredServer,
+  setPreferredAudio,
+  getPreferredAudio,
+  getAutoplayNext,
+  setAutoplayNext,
+  recordServerFailure,
+} from "./utils/watchHistory";
+import {
+  getMediaReleaseData,
+  CUSTOM_MEDIA_DATABASE,
+} from "./data/animeData";
+import { getCategoryStatus, STATUS_TYPES } from "./utils/releaseUtils";
+import ReleaseCountdown from "./components/ReleaseCountdown";
+import ReleaseStatusBadge from "./components/ReleaseStatusBadge";
+import StreamingSources from "./components/StreamingSources";
+import SubtitleSelector from "./components/SubtitleSelector";
+import UpcomingOverlay from "./components/UpcomingOverlay";
+import EpisodeAvailability from "./components/EpisodeAvailability";
 
 const fallback = "https://placehold.co/600x900/101217/ffffff?text=No+Poster";
+
 
 /* ─── Auth hook ─────────────────────────────────────────────────────────── */
 function useAuth() {
@@ -74,7 +98,6 @@ function NavSearch() {
   const wrapperRef = useRef(null);
   const navigate = useNavigate();
 
-  // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event) {
       if (wrapperRef.current && !wrapperRef.current.contains(event.target)) {
@@ -85,7 +108,6 @@ function NavSearch() {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  // Debounced TMDB multi-search
   useEffect(() => {
     const trimmed = query.trim();
     if (!trimmed) {
@@ -192,7 +214,7 @@ function NavSearch() {
                         <div className="search-result-title">{title}</div>
                         <div className="search-result-meta">
                           <span className={`search-badge ${type}`}>
-                            {type === "tv" ? "TV Series" : "Movie"}
+                            {type === "tv" ? "TV" : "Movie"}
                           </span>
                           {year && <span>{year}</span>}
                           {item.vote_average > 0 && (
@@ -212,7 +234,7 @@ function NavSearch() {
             </>
           ) : (
             <div className="search-status">
-              No movies or shows found for &ldquo;{query}&rdquo;
+              No results for &ldquo;{query}&rdquo;
             </div>
           )}
         </div>
@@ -234,7 +256,7 @@ function Layout({ children }) {
     <div className="app-shell">
       <header className="topbar">
         <Link className="brand" to="/">
-          <span className="brand-mark">M</span> Movie<span>Verse</span>
+          <span className="brand-mark">A</span> Ani<span>kai</span>
         </Link>
         <nav className={menu ? "nav open" : "nav"}>
           <Link to="/" onClick={() => setMenu(false)}>Home</Link>
@@ -263,10 +285,10 @@ function Layout({ children }) {
       <main>{children}</main>
       <footer>
         <div>
-          <b>MovieVerse</b>
-          <span> A modern high-definition movie &amp; TV discovery experience.</span>
+          <b>Anikai</b>
+          <span> Stream anime, movies &amp; series in HD with multi-server support.</span>
         </div>
-        <small>Metadata powered by TMDB. Streams provided by external CDN nodes.</small>
+        <small>Metadata powered by TMDB.</small>
       </footer>
     </div>
   );
@@ -291,22 +313,76 @@ function Notice({ text }) {
   );
 }
 
+const FEATURED_ANIME_ITEMS = [
+  {
+    id: "82452",
+    media_type: "tv",
+    title: "Solo Leveling",
+    poster_path: "/geCRueV3ElhRTr0xtJuCYJht8U8.jpg",
+    first_air_date: "2024",
+    vote_average: 8.9,
+    badge: "SUB / DUB",
+  },
+  {
+    id: "95479",
+    media_type: "tv",
+    title: "Jujutsu Kaisen",
+    poster_path: "/hFWP5DUFq5fDkdfq4OQz2HnZl1Y.jpg",
+    first_air_date: "2020",
+    vote_average: 9.3,
+    badge: "SUB / DUB",
+  },
+  {
+    id: "937278",
+    media_type: "movie",
+    title: "Suzume no Tojimari",
+    poster_path: "/vI37R07b3lF9rO35F2kC5n65kS2.jpg",
+    release_date: "2022",
+    vote_average: 8.5,
+    badge: "SUB / DUB",
+  },
+  {
+    id: "chainsaw-man-movie",
+    media_type: "movie",
+    title: "Chainsaw Man – Reze Arc",
+    poster_path: "https://placehold.co/600x900/181a26/a991ff?text=Chainsaw+Man+Movie",
+    release_date: "2026",
+    vote_average: 9.5,
+    badge: "UPCOMING",
+  },
+  {
+    id: "533535",
+    media_type: "movie",
+    title: "Deadpool & Wolverine",
+    poster_path: "/8cdWjvZQUExUUTzyp4t6EDMubfO.jpg",
+    release_date: "2024",
+    vote_average: 7.7,
+    badge: "SUB Available",
+  },
+];
+
 /* ─── Media card ─────────────────────────────────────────────────────────── */
-function MediaCard({ item }) {
+function MediaCard({ item, customBadge = null }) {
   const type = item.media_type || (item.first_air_date ? "tv" : "movie");
   const title = item.title || item.name;
+  const custom = CUSTOM_MEDIA_DATABASE[String(item.id)];
+  const badgeLabel =
+    customBadge || item.badge || (custom ? "SUB/DUB" : "HD");
+
+  const posterSrc = item.poster_path
+    ? item.poster_path.startsWith("http")
+      ? item.poster_path
+      : tmdbImage(item.poster_path, "w500")
+    : fallback;
+
   return (
     <Link className="media-card" to={`/watch/${type}/${item.id}`}>
       <div className="poster-wrap">
-        <img
-          loading="lazy"
-          src={tmdbImage(item.poster_path, "w500") || fallback}
-          alt={title}
-        />
+        <img loading="lazy" src={posterSrc} alt={title} />
         <div className="poster-overlay">
           <Play fill="white" size={24} />
         </div>
-        <span className="card-quality-badge">HD</span>
+        <span className="card-quality-badge">{badgeLabel}</span>
       </div>
       <div className="card-title">{title}</div>
       <div className="card-meta">
@@ -328,14 +404,12 @@ function Section({ title, items, type = "movie" }) {
         </Link>
       </div>
       <div className="card-row">
-        {items
-          ?.slice(0, 10)
-          .map((item) => (
-            <MediaCard
-              key={`${item.media_type || type}-${item.id}`}
-              item={item}
-            />
-          ))}
+        {items?.slice(0, 10).map((item) => (
+          <MediaCard
+            key={`${item.media_type || type}-${item.id}`}
+            item={item}
+          />
+        ))}
       </div>
     </section>
   );
@@ -348,21 +422,24 @@ function Hero({ item }) {
     <section
       className="hero"
       style={{
-        backgroundImage: `linear-gradient(90deg,#08090d 0%,rgba(8,9,13,.82) 42%,rgba(8,9,13,.15) 100%),linear-gradient(0deg,#08090d 0%,transparent 40%),url(${tmdbImage(item.backdrop_path, "original")})`,
+        backgroundImage: `linear-gradient(90deg,#08090d 0%,rgba(8,9,13,.82) 42%,rgba(8,9,13,.15) 100%),linear-gradient(0deg,#08090d 0%,transparent 40%),url(${tmdbImage(
+          item.backdrop_path,
+          "original"
+        )})`,
       }}
     >
       <div className="hero-content">
         <div className="eyebrow flex-gap">
-          <Sparkles size={13} /> Featured in 4K Ultra HD
+          <Sparkles size={13} /> Featured Stream
         </div>
         <h1>{item.title || item.name}</h1>
-        <p>{item.overview || "Discover something great to watch in 4K and Full HD."}</p>
+        <p>{item.overview || "Discover something great to watch in Full HD."}</p>
         <div className="hero-actions">
           <Link className="primary-btn" to={`/watch/${type}/${item.id}`}>
             <Play fill="currentColor" size={18} /> Stream Now
           </Link>
           <Link className="ghost-btn" to={`/watch/${type}/${item.id}`}>
-            Details &amp; Quality
+            Details
           </Link>
         </div>
       </div>
@@ -375,6 +452,7 @@ function Home() {
   const [data, setData] = useState({ trending: [], movies: [], tv: [] });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  useEffect(() => { document.title = "Anikai - Watch Anime & Movies"; }, []);
   useEffect(() => {
     Promise.all([getTrending(), getPopularMovies(), getPopularTV()])
       .then(([t, m, tv]) =>
@@ -395,12 +473,18 @@ function Home() {
       <div className="container">
         {error && <Notice text={error} />}
         <Section title="Trending This Week" items={data.trending} />
-        <Section title="Popular Movies (4K / 1080p)" items={data.movies} />
+        <Section
+          title="Featured Anime & Release Schedule (SUB / DUB)"
+          items={FEATURED_ANIME_ITEMS}
+          type="tv"
+        />
+        <Section title="Popular Movies" items={data.movies} />
         <Section title="Popular TV Shows" items={data.tv} type="tv" />
       </div>
     </>
   );
 }
+
 
 /* ─── Listing page ───────────────────────────────────────────────────────── */
 function Listing({ type }) {
@@ -492,7 +576,7 @@ function EmbedPlayer({ url, reloadKey, isTrailer = false }) {
       {isIframeLoading && (
         <div className="player-loading-spinner">
           <LoaderCircle size={38} className="spin" />
-          <span>Connecting to High-Speed Video Stream...</span>
+          <span>Connecting to stream...</span>
         </div>
       )}
       <iframe
@@ -503,7 +587,7 @@ function EmbedPlayer({ url, reloadKey, isTrailer = false }) {
         allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
         referrerPolicy="origin-when-cross-origin"
         onLoad={() => setIsIframeLoading(false)}
-        title={isTrailer ? "Official HD Trailer" : "MovieVerse Video Player"}
+        title={isTrailer ? "Official HD Trailer" : "Video Player"}
       />
     </div>
   );
@@ -512,42 +596,139 @@ function EmbedPlayer({ url, reloadKey, isTrailer = false }) {
 /* ─── Watch page ─────────────────────────────────────────────────────────── */
 function WatchPage() {
   const { type, id } = useParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [media, setMedia] = useState(null);
   const [error, setError] = useState("");
 
-  // TV state
-  const [season, setSeason] = useState(1);
-  const [episode, setEpisode] = useState(1);
+  // TV state — read initial season/episode from URL
+  const [season, setSeason] = useState(() => Number(searchParams.get("season")) || 1);
+  const [episode, setEpisode] = useState(() => Number(searchParams.get("episode")) || 1);
   const [seasonData, setSeasonData] = useState(null);
 
-  // Server & Player controls
+  // Streaming category & server controls
+  const preferredAudio = getPreferredAudio();
+  const [activeCategoryKey, setActiveCategoryKey] = useState(preferredAudio);
   const [serverIdx, setServerIdx] = useState(0);
+  const [activeSubtitleId, setActiveSubtitleId] = useState(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [refreshTick, setRefreshTick] = useState(0);
   const [theaterMode, setTheaterMode] = useState(false);
   const [isTrailerActive, setIsTrailerActive] = useState(false);
 
-  // Fetch media metadata
+  // Auto-next & failover state
+  const [showAutoNext, setShowAutoNext] = useState(false);
+  const [failoverAttempt, setFailoverAttempt] = useState(0);
+  const [triedServerIds, setTriedServerIds] = useState(new Set());
+  const failoverInProgress = useRef(false);
+  const autoplayEnabled = getAutoplayNext();
+
+  // Sync URL search params when season/episode change
+  useEffect(() => {
+    if (type === "tv") {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        next.set("season", String(season));
+        next.set("episode", String(episode));
+        return next;
+      }, { replace: true });
+    }
+  }, [type, season, episode]);
+
+  // Reset controls when item changes; always re-resolve best audio category
+  useEffect(() => {
+    setServerIdx(0);
+    setActiveSubtitleId(null);
+    setIsTrailerActive(false);
+    setShowAutoNext(false);
+    setTriedServerIds(new Set());
+    setFailoverAttempt(0);
+    failoverInProgress.current = false;
+    // Don't force reset activeCategoryKey here — let the render-time
+    // fallback in activeCatConfig handle it so we keep user preference
+    // but safely fall back to sub if dub is not available.
+  }, [type, id, season, episode]);
+
   useEffect(() => {
     setMedia(null);
     setError("");
-    setIsTrailerActive(false);
     (type === "tv" ? getTV(id) : getMovie(id))
       .then(setMedia)
-      .catch((e) => setError(e.message));
+      .catch((e) => {
+        const custom = CUSTOM_MEDIA_DATABASE[String(id)];
+        if (custom) {
+          setMedia({
+            id: custom.id,
+            title: custom.title,
+            name: custom.title,
+            overview:
+              custom.overview ||
+              "Stream high-definition episodes with multi-server support and multi-language subtitles.",
+            number_of_seasons: custom.seasons
+              ? Object.keys(custom.seasons).length
+              : 1,
+            vote_average: 9.2,
+          });
+        } else {
+          setError(e.message);
+        }
+      });
   }, [type, id]);
 
-  // Reset season/ep when switching titles
   useEffect(() => {
     setSeason(1);
     setEpisode(1);
   }, [type, id]);
 
-  // Fetch season episode list for TV
   useEffect(() => {
-    if (type === "tv" && media?.number_of_seasons) {
+    if (type === "tv") {
+      const custom = CUSTOM_MEDIA_DATABASE[String(id)];
+      const customSeasonEps = custom?.seasons?.[season]?.episodes;
+
       getSeason(id, season)
-        .then(setSeasonData)
-        .catch(() => setSeasonData(null));
+        .then((res) => {
+          if (customSeasonEps && res?.episodes) {
+            const merged = res.episodes.map((ep) => {
+              const customEp = customSeasonEps.find(
+                (ce) => ce.number === ep.episode_number
+              );
+              return {
+                ...ep,
+                name: customEp?.title || ep.name,
+                overview: customEp?.overview || ep.overview,
+              };
+            });
+            customSeasonEps.forEach((ce) => {
+              if (!merged.find((m) => m.episode_number === ce.number)) {
+                merged.push({
+                  id: `custom-ep-${ce.number}`,
+                  episode_number: ce.number,
+                  name: ce.title,
+                  overview: ce.overview,
+                  vote_average: ce.rating || 9.0,
+                });
+              }
+            });
+            merged.sort((a, b) => a.episode_number - b.episode_number);
+            setSeasonData({ episodes: merged });
+          } else {
+            setSeasonData(res);
+          }
+        })
+        .catch(() => {
+          if (customSeasonEps) {
+            setSeasonData({
+              episodes: customSeasonEps.map((ce) => ({
+                id: `custom-ep-${ce.number}`,
+                episode_number: ce.number,
+                name: ce.title,
+                overview: ce.overview,
+                vote_average: ce.rating || 9.0,
+              })),
+            });
+          } else {
+            setSeasonData(null);
+          }
+        });
     }
   }, [type, id, season, media?.number_of_seasons]);
 
@@ -560,22 +741,108 @@ function WatchPage() {
   if (!media) return <Loader />;
 
   const imdbId = media.external_ids?.imdb_id || media.imdb_id;
-  const currentServer = SERVERS[serverIdx] || SERVERS[0];
   const trailerUrl = getOfficialTrailerUrl(media.videos);
 
-  const embedUrl = isTrailerActive && trailerUrl
-    ? trailerUrl
-    : getEmbedUrl({
-        type,
-        id,
-        imdbId,
-        season,
-        episode,
-        serverIndex: serverIdx,
-      });
+  // Resolve structured SUB, S-SUB, DUB sources and release schedule
+  const releaseData = getMediaReleaseData({
+    type,
+    id,
+    season,
+    episode,
+    imdbId,
+  });
+
+  const subConfig = releaseData?.sub;
+  const ssubConfig = releaseData?.ssub;
+  const dubConfig = releaseData?.dub;
+
+  // Determine content type (anime vs movie) for server capability filtering.
+  // Custom entries are tagged; for generic TMDB content, 'tv' = anime pool, 'movie' = movie pool.
+  const contentType =
+    releaseData?.contentType ||
+    CUSTOM_MEDIA_DATABASE[String(id)]?.contentType ||
+    (type === "tv" ? "anime" : "movie");
+
+  // Active category config — resolve safely with fallback to any available category
+  let resolvedCategoryKey = activeCategoryKey;
+  let activeCatConfig = releaseData?.[resolvedCategoryKey];
+
+  // If the preferred audio category isn't in releaseData, fall back gracefully
+  if (!activeCatConfig) {
+    if (subConfig) {
+      activeCatConfig = subConfig;
+      resolvedCategoryKey = "sub";
+    } else if (dubConfig) {
+      activeCatConfig = dubConfig;
+      resolvedCategoryKey = "dub";
+    } else if (ssubConfig) {
+      activeCatConfig = ssubConfig;
+      resolvedCategoryKey = "ssub";
+    }
+  }
+
+  const activeCategoryStatus = activeCatConfig
+    ? getCategoryStatus(activeCatConfig)
+    : STATUS_TYPES.AVAILABLE;
+  const isCurrentCategoryAvailable =
+    activeCategoryStatus === STATUS_TYPES.AVAILABLE;
+
+  const allCategorySources = activeCatConfig?.sources || [];
+  const playableSources = allCategorySources.filter((src) => {
+    const key = getSourceHealthKey({
+      serverId: src.id,
+      type,
+      id,
+      season,
+      episode,
+      categoryKey: resolvedCategoryKey,
+    });
+    const status = getSourceHealth(key, src.id);
+    return isServerPlayable(status);
+  });
+  const currentSources =
+    playableSources.length > 0 ? playableSources : allCategorySources;
+  const currentServer = currentSources[serverIdx] || currentSources[0] || null;
+  const subtitles =
+    currentServer?.subtitles || activeCatConfig?.subtitles || [];
+
+  // Determine alternative available category if currently chosen category is upcoming/delayed
+  let availableAlternative = null;
+  if (!isCurrentCategoryAvailable) {
+    if (
+      resolvedCategoryKey !== "sub" &&
+      subConfig &&
+      getCategoryStatus(subConfig) === STATUS_TYPES.AVAILABLE
+    ) {
+      availableAlternative = "SUB";
+    } else if (
+      resolvedCategoryKey !== "dub" &&
+      dubConfig &&
+      getCategoryStatus(dubConfig) === STATUS_TYPES.AVAILABLE
+    ) {
+      availableAlternative = "DUB";
+    } else if (
+      resolvedCategoryKey !== "ssub" &&
+      ssubConfig &&
+      getCategoryStatus(ssubConfig) === STATUS_TYPES.AVAILABLE
+    ) {
+      availableAlternative = "S-SUB";
+    }
+  }
 
   const title = media.title || media.name;
-  const releaseYear = (media.release_date || media.first_air_date || "").slice(0, 4);
+  // Update browser tab title with Anikai branding
+  useEffect(() => {
+    if (title) {
+      document.title = `${title} - Anikai`;
+    }
+    return () => { document.title = "Anikai - Watch Anime & Movies"; };
+  }, [title]);
+  const releaseYear = (
+    media.release_date ||
+    media.first_air_date ||
+    ""
+  ).slice(0, 4);
   const runtime = media.runtime
     ? `${Math.floor(media.runtime / 60)}h ${media.runtime % 60}m`
     : media.episode_run_time?.length
@@ -586,7 +853,6 @@ function WatchPage() {
   const cast = media.credits?.cast?.slice(0, 6) || [];
   const recommendations = media.recommendations?.results?.slice(0, 6) || [];
 
-  // TV episode handlers
   const totalEpisodesInSeason = seasonData?.episodes?.length || 0;
   const hasPrevEp = type === "tv" && (episode > 1 || season > 1);
   const hasNextEp =
@@ -611,76 +877,128 @@ function WatchPage() {
     }
   }
 
-  function handleNextServer() {
-    setServerIdx((prev) => (prev + 1) % SERVERS.length);
-    setIsTrailerActive(false);
+  function handleReloadStream() {
+    setTriedServerIds(new Set());
+    setFailoverAttempt(0);
+    failoverInProgress.current = false;
+    setReloadKey((prev) => prev + 1);
   }
 
-  function handleReloadStream() {
-    setReloadKey((prev) => prev + 1);
+  function handleCountdownExpire() {
+    // Automatically re-evaluate release status without requiring page refresh
+    setRefreshTick((prev) => prev + 1);
+  }
+
+  // Auto-failover: called by EnhancedEmbedPlayer when a server fails to load
+  function handleFailover(failedServerId) {
+    if (failoverInProgress.current) return;
+    failoverInProgress.current = true;
+
+    if (failedServerId) {
+      recordServerFailure(failedServerId);
+      setTriedServerIds((prev) => new Set([...prev, failedServerId]));
+    }
+
+    // Find next untried source
+    const nextIndex = currentSources.findIndex(
+      (src, idx) => idx > serverIdx && !triedServerIds.has(src.id)
+    );
+    if (nextIndex !== -1) {
+      setServerIdx(nextIndex);
+    } else {
+      // All sources failed
+      setServerIdx(-1); // signals error to player
+    }
+    setTimeout(() => {
+      failoverInProgress.current = false;
+    }, 1500);
+  }
+
+  function handleManualSelectServer(catKey, index, srv) {
+    setActiveCategoryKey(catKey);
+    setServerIdx(index);
+    setIsTrailerActive(false);
+    setTriedServerIds(new Set());
+    setFailoverAttempt(0);
+    failoverInProgress.current = false;
+    if (srv?.id) {
+      setPreferredServer(srv.id);
+    }
+  }
+
+  function handleSelectCategory(catKey) {
+    setActiveCategoryKey(catKey);
+    setServerIdx(0);
+    setIsTrailerActive(false);
+    setTriedServerIds(new Set());
+    setFailoverAttempt(0);
+    failoverInProgress.current = false;
+    setPreferredAudio(catKey);
   }
 
   return (
     <div className={`watch-page-wrapper ${theaterMode ? "theater-active" : ""}`}>
-      <div className={`container page watch-page ${theaterMode ? "theater-container" : ""}`}>
-        {/* ── Player Toolbar ── */}
+      <div
+        className={`container page watch-page ${
+          theaterMode ? "theater-container" : ""
+        }`}
+      >
+        {/* ── Compact Player Controls Header ── */}
         <div className="player-top-bar">
           <div className="player-meta-left">
-            <span className={`quality-badge-pill ${currentServer.badgeClass}`}>
-              {isTrailerActive ? "Official Trailer" : currentServer.badge}
+            <span className="category-type-pill">
+              {resolvedCategoryKey.toUpperCase()}
             </span>
-            <span className="player-server-name">
-              {isTrailerActive ? "YouTube 4K/HD Trailer" : currentServer.name}
-            </span>
-            {!isTrailerActive && currentServer.recommended && (
-              <span className="recommended-tag">
-                <Sparkles size={12} /> Best Quality
+            <ReleaseStatusBadge
+              status={activeCategoryStatus}
+              targetDate={activeCatConfig?.releaseAt}
+              size="sm"
+            />
+            {isCurrentCategoryAvailable && currentServer?.badge && (
+              <span
+                className={`quality-badge-pill ${
+                  currentServer.badgeClass || "badge-fhd"
+                }`}
+              >
+                {isTrailerActive ? "Trailer" : currentServer.badge}
               </span>
             )}
+            <span className="player-server-name">
+              {isTrailerActive
+                ? "Official Trailer"
+                : isCurrentCategoryAvailable
+                ? (currentServer?.name || `Server ${serverIdx + 1}`)
+                : `${resolvedCategoryKey.toUpperCase()} Release Scheduled`}
+            </span>
           </div>
 
           <div className="player-actions-right">
-            {/* Trailer toggle */}
             {trailerUrl && (
               <button
                 className={`player-tool-btn ${isTrailerActive ? "active" : ""}`}
                 onClick={() => setIsTrailerActive((v) => !v)}
                 title="Watch Official HD Trailer"
               >
-                <Clapperboard size={15} />
-                <span>{isTrailerActive ? "Back to Stream" : "Official Trailer"}</span>
+                <Clapperboard size={14} />
+                <span>{isTrailerActive ? "Stream" : "Trailer"}</span>
               </button>
             )}
 
-            {/* Quick Next Server */}
-            {!isTrailerActive && (
-              <button
-                className="player-tool-btn"
-                onClick={handleNextServer}
-                title="Switch to next streaming server"
-              >
-                <Layers size={15} />
-                <span>Next Server ({serverIdx + 1}/{SERVERS.length})</span>
-              </button>
-            )}
-
-            {/* Reload Stream */}
             <button
               className="player-tool-btn"
               onClick={handleReloadStream}
               title="Reload video stream"
             >
-              <RotateCcw size={15} />
+              <RotateCcw size={14} />
               <span>Reload</span>
             </button>
 
-            {/* Theater Mode */}
             <button
               className={`player-tool-btn ${theaterMode ? "active" : ""}`}
               onClick={() => setTheaterMode((v) => !v)}
               title={theaterMode ? "Exit Theater Mode" : "Theater Mode"}
             >
-              {theaterMode ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              {theaterMode ? <Minimize2 size={14} /> : <Maximize2 size={14} />}
               <span>Theater</span>
             </button>
           </div>
@@ -688,14 +1006,89 @@ function WatchPage() {
 
         {/* ── Player Frame ── */}
         <div className="player-shell">
-          <EmbedPlayer
-            url={embedUrl}
-            reloadKey={reloadKey}
-            isTrailer={isTrailerActive}
-          />
+          {isTrailerActive && trailerUrl ? (
+            <EnhancedEmbedPlayer
+              server={{ url: trailerUrl }}
+              serverName="Official HD Trailer"
+              serverIndex={0}
+              totalServers={1}
+              reloadKey={reloadKey}
+              isTrailer={true}
+              trailerUrl={trailerUrl}
+              mediaType={type}
+              mediaId={id}
+              mediaTitle={title}
+              season={season}
+              episode={episode}
+              onManualReload={handleReloadStream}
+            />
+          ) : isCurrentCategoryAvailable && currentServer?.url && serverIdx >= 0 ? (
+            <EnhancedEmbedPlayer
+              server={currentServer}
+              serverName={currentServer.name || `Server ${serverIdx + 1}`}
+              serverIndex={serverIdx}
+              totalServers={currentSources.length}
+              reloadKey={reloadKey}
+              isTrailer={false}
+              skipTimings={currentServer?.skipTimings || activeCatConfig?.skipTimings || null}
+              mediaType={type}
+              mediaId={id}
+              mediaTitle={title || ""}
+              season={season}
+              episode={episode}
+              hasNextEpisode={hasNextEp}
+              nextEpisodeNumber={episode + 1}
+              nextEpisodeTitle={seasonData?.episodes?.find(ep => ep.episode_number === episode + 1)?.name || ""}
+              onPlayNextEpisode={() => {
+                setShowAutoNext(false);
+                handleNextEpisode();
+              }}
+              onFailover={handleFailover}
+              onManualReload={handleReloadStream}
+            />
+          ) : serverIdx < 0 ? (
+            // All servers failed
+            <div className="player-all-failed-overlay">
+              <div className="player-error-card">
+                <WifiOff size={36} />
+                <h3>No Working Servers Available</h3>
+                <p>All configured sources are currently unavailable for this title.</p>
+                <button type="button" className="primary-btn" onClick={handleReloadStream}>
+                  <RotateCcw size={14} /> Try Again
+                </button>
+              </div>
+            </div>
+          ) : (
+            <UpcomingOverlay
+              mediaTitle={
+                type === "tv" ? `${title} S${season}E${episode}` : title
+              }
+              category={resolvedCategoryKey.toUpperCase()}
+              categoryConfig={activeCatConfig}
+              availableAlternativeCategory={availableAlternative}
+              onSwitchCategory={(cat) => {
+                const normalized = cat.toLowerCase().replace("-", "");
+                handleSelectCategory(normalized === "ssub" ? "ssub" : normalized);
+              }}
+              onExpire={handleCountdownExpire}
+            />
+          )}
         </div>
 
-        {/* ── Episode navigation toolbar for TV ── */}
+        {/* ── Auto-Next Episode Overlay ── */}
+        {showAutoNext && hasNextEp && (
+          <AutoNextOverlay
+            nextEpisodeNumber={episode + 1}
+            nextEpisodeTitle={seasonData?.episodes?.find(ep => ep.episode_number === episode + 1)?.name || ""}
+            onPlayNext={() => {
+              setShowAutoNext(false);
+              handleNextEpisode();
+            }}
+            onCancel={() => setShowAutoNext(false)}
+          />
+        )}
+
+        {/* ── TV Episode Prev/Next Bar ── */}
         {type === "tv" && (
           <div className="episode-nav-bar">
             <button
@@ -703,147 +1096,72 @@ function WatchPage() {
               onClick={handlePrevEpisode}
               disabled={!hasPrevEp}
             >
-              <ChevronLeft size={16} /> Previous Episode
+              <ChevronLeft size={15} /> Prev Ep
             </button>
             <div className="ep-nav-indicator">
               Season {season} · Episode {episode}
-              {seasonData?.episodes?.find((e) => e.episode_number === episode)?.name
-                ? ` — "${seasonData.episodes.find((e) => e.episode_number === episode).name}"`
-                : ""}
             </div>
             <button
               className="ep-nav-btn"
               onClick={handleNextEpisode}
               disabled={!hasNextEp}
             >
-              Next Episode <ChevronRight size={16} />
+              Next Ep <ChevronRight size={15} />
             </button>
           </div>
         )}
 
-        <div className="watch-controls">
-          {/* Quality highlight banner */}
-          <div className="quality-advisory-card">
-            <div className="advisory-icon">
-              <ShieldCheck size={20} />
-            </div>
-            <div className="advisory-text">
-              <b>High-Definition Stream Engine</b>
-              <span>
-                {currentServer.name} is streaming in <b>{currentServer.quality}</b> with adaptive bitrate.
-                If you encounter slow buffering or low resolution, switch to <b>Server 1 (VidLink)</b> or <b>Server 2 (VidSrc PRO)</b> for instant 4K/1080p playback.
-              </span>
-            </div>
-          </div>
+        {/* ── Subtitle Selector (when subtitles exist for current stream) ── */}
+        {isCurrentCategoryAvailable && subtitles.length > 0 && (
+          <SubtitleSelector
+            subtitles={subtitles}
+            activeSubtitleId={activeSubtitleId}
+            onSelectSubtitle={(subId) => setActiveSubtitleId(subId)}
+          />
+        )}
 
-          {/* Title & Overview */}
-          <div className="watch-title-header">
-            <div className="watch-title-main">
-              <h1>{title}</h1>
-              <div className="media-tags-row">
-                <span className="media-tag-pill highlight">4K Ultra HD</span>
-                <span className="media-tag-pill highlight">1080p FHD</span>
-                <span className="media-tag-pill">Dolby 5.1</span>
-                <span className="media-tag-pill">Multi-Subs</span>
-                {releaseYear && (
-                  <span className="media-meta-item">
-                    <Calendar size={14} /> {releaseYear}
-                  </span>
-                )}
-                {runtime && (
-                  <span className="media-meta-item">
-                    <Clock size={14} /> {runtime}
-                  </span>
-                )}
-                {rating && (
-                  <span className="media-rating-pill">
-                    <Star size={14} fill="#fbbf24" color="#fbbf24" /> {rating}
-                  </span>
-                )}
-              </div>
-              {genres && <div className="genre-label">{genres}</div>}
-              <p className="media-synopsis">{media.overview || "No overview available."}</p>
-            </div>
-          </div>
+        {/* ── Sleek Categorized Streaming Sources (SUB, S-SUB, DUB) ── */}
+        <StreamingSources
+          sourcesConfig={releaseData}
+          contentType={contentType}
+          mediaContext={{ type, id, season, episode }}
+          activeCategoryKey={resolvedCategoryKey}
+          activeServerIndex={serverIdx}
+          onSelectCategory={handleSelectCategory}
+          onSelectServer={handleManualSelectServer}
+          onReloadStream={handleReloadStream}
+        />
 
-          {/* Server Switcher Grid */}
-          <div className="server-panel">
-            <div className="server-panel-header">
-              <div>
-                <b>Streaming Servers &amp; Video Quality</b>
-                <span className="server-panel-subtitle">
-                  Choose a high-speed server below for optimum video resolution &amp; audio.
+        {/* ── Clean Media Metadata ── */}
+        <div className="watch-info-section">
+          <div className="watch-title-row">
+            <h1 className="watch-main-title">{title}</h1>
+            <div className="watch-meta-pills">
+              {releaseYear && <span className="meta-pill">{releaseYear}</span>}
+              {runtime && <span className="meta-pill">{runtime}</span>}
+              {rating && (
+                <span className="meta-pill rating-pill">
+                  <Star size={13} fill="#fbbf24" color="#fbbf24" /> {rating}
                 </span>
-              </div>
-              <span className="server-count-badge">
-                {SERVERS.length} Servers Active
-              </span>
-            </div>
-
-            <div className="server-grid">
-              {SERVERS.map((s, i) => {
-                const isActive = serverIdx === i && !isTrailerActive;
-                return (
-                  <button
-                    key={s.id || s.name}
-                    className={`server-card ${isActive ? "active" : ""}`}
-                    onClick={() => {
-                      setServerIdx(i);
-                      setIsTrailerActive(false);
-                    }}
-                  >
-                    <div className="server-card-top">
-                      <span className="server-number-name">{s.name}</span>
-                      <span className={`server-card-badge ${s.badgeClass}`}>
-                        {s.badge}
-                      </span>
-                    </div>
-                    <div className="server-card-desc">
-                      <span>{s.tag}</span>
-                      {isActive && (
-                        <span className="active-dot">
-                          <Check size={12} /> Streaming
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                );
-              })}
+              )}
+              <span className="meta-pill quality-pill">HD / 2K QHD</span>
             </div>
           </div>
+          {genres && <div className="genre-text">{genres}</div>}
+          <p className="media-synopsis">
+            {media.overview || "No overview available."}
+          </p>
+        </div>
 
-          {/* Cast members */}
-          {cast.length > 0 && (
-            <div className="cast-section">
-              <b>Featured Cast</b>
-              <div className="cast-row">
-                {cast.map((c) => (
-                  <div key={c.id} className="cast-card">
-                    <img
-                      src={tmdbImage(c.profile_path, "w185") || fallback}
-                      alt={c.name}
-                      className="cast-avatar"
-                    />
-                    <div className="cast-info">
-                      <div className="cast-name">{c.name}</div>
-                      <div className="cast-char">{c.character}</div>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* TV Episodes Selection */}
-          {type === "tv" && media.number_of_seasons > 0 && (
-            <div className="episodes">
-              <div className="episode-top">
-                <div>
-                  <b>Season Episodes</b>
-                  <span className="episode-season-count">
-                    {media.number_of_seasons} {media.number_of_seasons === 1 ? "Season" : "Seasons"} Available
-                  </span>
-                </div>
+        {/* ── TV Episodes List with Real-Time Availability ── */}
+        {type === "tv" && (
+          <div className="episodes">
+            <div className="episode-top">
+              <b>
+                Episodes (
+                {totalEpisodesInSeason || seasonData?.episodes?.length || 0})
+              </b>
+              {media.number_of_seasons > 1 && (
                 <select
                   value={season}
                   onChange={(e) => {
@@ -852,67 +1170,97 @@ function WatchPage() {
                   }}
                   className="season-select"
                 >
-                  {Array.from({ length: media.number_of_seasons }, (_, i) => (
-                    <option key={i + 1} value={i + 1}>
-                      Season {i + 1}
-                    </option>
-                  ))}
+                  {Array.from(
+                    { length: media.number_of_seasons },
+                    (_, i) => (
+                      <option key={i + 1} value={i + 1}>
+                        Season {i + 1}
+                      </option>
+                    )
+                  )}
                 </select>
-              </div>
-
-              <div className="episode-grid">
-                {seasonData?.episodes?.map((ep) => {
-                  const isCurrent = episode === ep.episode_number;
-                  return (
-                    <button
-                      key={ep.id}
-                      className={`episode ${isCurrent ? "active-ep" : ""}`}
-                      onClick={() => setEpisode(ep.episode_number)}
-                    >
-                      <div className="ep-num-box">
-                        <span>{ep.episode_number}</span>
-                      </div>
-                      <div className="ep-details">
-                        <div className="ep-header-row">
-                          <b className="ep-title">{ep.name}</b>
-                          {ep.vote_average > 0 && (
-                            <span className="ep-rating">
-                              ★ {ep.vote_average.toFixed(1)}
-                            </span>
-                          )}
-                        </div>
-                        <small className="ep-desc">
-                          {ep.overview || "No episode summary provided."}
-                        </small>
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
+              )}
             </div>
-          )}
 
-          {/* Recommendations */}
-          {recommendations.length > 0 && (
-            <div className="section recommendations-section">
-              <div className="section-head">
-                <h2>Recommended For You</h2>
-              </div>
-              <div className="card-row">
-                {recommendations.map((item) => (
-                  <MediaCard
-                    key={`${item.media_type || type}-${item.id}`}
-                    item={item}
+            <div className="episode-grid">
+              {(seasonData?.episodes || []).map((ep) => {
+                const isCurrent = episode === ep.episode_number;
+                const epReleaseData = getMediaReleaseData({
+                  type: "tv",
+                  id,
+                  season,
+                  episode: ep.episode_number,
+                });
+
+                return (
+                  <EpisodeAvailability
+                    key={ep.id || ep.episode_number}
+                    episodeNumber={ep.episode_number}
+                    title={ep.name}
+                    overview={ep.overview}
+                    rating={ep.vote_average}
+                    episodeConfig={epReleaseData}
+                    isCurrent={isCurrent}
+                    watchProgress={getWatchProgress("tv", id, season, ep.episode_number)}
+                    onSelect={() => {
+                      setEpisode(ep.episode_number);
+                      setServerIdx(0);
+                      setIsTrailerActive(false);
+                      setTriedServerIds(new Set());
+                      setFailoverAttempt(0);
+                      failoverInProgress.current = false;
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    }}
                   />
-                ))}
-              </div>
+                );
+              })}
             </div>
-          )}
-        </div>
+          </div>
+        )}
+
+        {/* ── Cast ── */}
+        {cast.length > 0 && (
+          <div className="cast-section">
+            <b>Featured Cast</b>
+            <div className="cast-row">
+              {cast.map((c) => (
+                <div key={c.id} className="cast-card">
+                  <img
+                    src={tmdbImage(c.profile_path, "w185") || fallback}
+                    alt={c.name}
+                    className="cast-avatar"
+                  />
+                  <div className="cast-info">
+                    <div className="cast-name">{c.name}</div>
+                    <div className="cast-char">{c.character}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* ── Recommendations ── */}
+        {recommendations.length > 0 && (
+          <div className="section recommendations-section">
+            <div className="section-head">
+              <h2>You May Also Like</h2>
+            </div>
+            <div className="card-row">
+              {recommendations.map((item) => (
+                <MediaCard
+                  key={`${item.media_type || type}-${item.id}`}
+                  item={item}
+                />
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
 }
+
 
 /* ─── Login ──────────────────────────────────────────────────────────────── */
 function Login() {
@@ -931,7 +1279,7 @@ function Login() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="brand big">
-          <span className="brand-mark">M</span> Movie<span>Verse</span>
+          <span className="brand-mark">A</span> Ani<span>kai</span>
         </div>
         <h1>Welcome back</h1>
         <p>Sign in to keep your list and watch history.</p>
@@ -1000,31 +1348,89 @@ function Profile() {
   );
 }
 
+/* ─── Error Boundary ──────────────────────────────────────────────────────── */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error, errorInfo) {
+    console.error("ErrorBoundary caught an error:", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div
+          className="container page"
+          style={{
+            minHeight: "60vh",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+          }}
+        >
+          <div className="player-error-card" style={{ maxWidth: "450px" }}>
+            <div className="error-icon-wrap">
+              <AlertCircle size={36} />
+            </div>
+            <h2 className="error-heading">Unable to Load Page</h2>
+            <p className="error-desc">
+              {this.state.error?.message ||
+                "An unexpected rendering issue occurred. Please return home or try again."}
+            </p>
+            <div className="error-actions" style={{ marginTop: "14px" }}>
+              <button
+                type="button"
+                className="primary-btn"
+                onClick={() => {
+                  this.setState({ hasError: false, error: null });
+                  window.location.href = "/";
+                }}
+              >
+                <RotateCcw size={14} /> Go to Home
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
 /* ─── App ────────────────────────────────────────────────────────────────── */
 export default function App() {
   return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<Home />} />
-        <Route path="/movies" element={<Listing type="movie" />} />
-        <Route path="/tv" element={<Listing type="tv" />} />
-        <Route path="/search" element={<SearchPage />} />
-        <Route path="/watch/:type/:id" element={<WatchPage />} />
-        <Route path="/login" element={<Login />} />
-        <Route path="/profile" element={<Profile />} />
-        <Route
-          path="*"
-          element={
-            <div className="container page">
-              <h1>404</h1>
-              <p>Page not found.</p>
-              <Link className="primary-btn" to="/">
-                Go home
-              </Link>
-            </div>
-          }
-        />
-      </Routes>
-    </Layout>
+    <ErrorBoundary>
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/movies" element={<Listing type="movie" />} />
+          <Route path="/tv" element={<Listing type="tv" />} />
+          <Route path="/search" element={<SearchPage />} />
+          <Route path="/watch/:type/:id" element={<WatchPage />} />
+          <Route path="/login" element={<Login />} />
+          <Route path="/profile" element={<Profile />} />
+          <Route
+            path="*"
+            element={
+              <div className="container page">
+                <h1>404</h1>
+                <p>Page not found.</p>
+                <Link className="primary-btn" to="/">
+                  Go home
+                </Link>
+              </div>
+            }
+          />
+        </Routes>
+      </Layout>
+    </ErrorBoundary>
   );
 }
