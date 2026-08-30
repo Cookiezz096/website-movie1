@@ -131,7 +131,8 @@ export function useServerHealth(contentType = "movie", mediaContext = null) {
     (sources = [], categoryKey = "sub") => {
       return sources.filter((src) => {
         const status = getSourceStatus(src, categoryKey);
-        return isServerPlayable(status);
+        const healthStr = typeof status === 'object' ? status.health : status;
+        return isServerPlayable(healthStr);
       });
     },
     [getSourceStatus]

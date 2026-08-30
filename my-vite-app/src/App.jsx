@@ -51,6 +51,7 @@ import EnhancedEmbedPlayer from "./components/EnhancedEmbedPlayer";
 import AutoNextOverlay from "./components/AutoNextOverlay";
 import SkipTimingsOverlay from "./components/SkipTimingsOverlay";
 import { rankSources, getBestSourceIndex } from "./utils/serverRanking";
+import { useServerHealth } from "./utils/useServerHealth";
 import {
   getWatchProgress,
   setPreferredServer,
@@ -622,6 +623,23 @@ function WatchPage() {
   const failoverInProgress = useRef(false);
   const autoplayEnabled = getAutoplayNext();
 
+  // IMPORTANT: useServerHealth must live here — BEFORE any early returns — to satisfy
+  // React Hook rules. releaseData is passed in via computed value from `media` state.
+  const releaseDataForHook = media
+    ? getMediaReleaseData({ type, id, season, episode, imdbId: media.external_ids?.imdb_id || media.imdb_id })
+    : null;
+  const contentTypeForHook =
+    releaseDataForHook?.contentType ||
+    CUSTOM_MEDIA_DATABASE[String(id)]?.contentType ||
+    (type === "tv" ? "anime" : "movie");
+  const { isChecking, getSourceStatus } = useServerHealth(contentTypeForHook, releaseDataForHook ? {
+    releaseData: releaseDataForHook,
+    type,
+    id,
+    season,
+    episode,
+  } : null);
+
   // Sync URL search params when season/episode change
   useEffect(() => {
     if (type === "tv") {
@@ -796,23 +814,30 @@ function WatchPage() {
     activeCategoryStatus === STATUS_TYPES.AVAILABLE;
 
   const allCategorySources = activeCatConfig?.sources || [];
-  const playableSources = allCategorySources.filter((src) => {
-    const key = getSourceHealthKey({
-      serverId: src.id,
-      type,
-      id,
-      season,
-      episode,
-      categoryKey: resolvedCategoryKey,
-    });
-    const status = getSourceHealth(key, src.id);
-    return isServerPlayable(status);
-  });
+
+  // Dynamically rank sources for this exact episode — prioritises:
+  //   ① WORKING + English Subtitles ② WORKING + Any Subtitles ③ UNVERIFIED ④ DEGRADED
+  // Servers that are UNAVAILABLE or OFFLINE are filtered out automatically.
+  const rankedSources = rankSources(
+    allCategorySources,
+    (src) => getSourceStatus(src, resolvedCategoryKey),
+    resolvedCategoryKey
+  );
   const currentSources =
-    playableSources.length > 0 ? playableSources : allCategorySources;
+    rankedSources.length > 0 ? rankedSources.map((r) => r.source) : allCategorySources;
   const currentServer = currentSources[serverIdx] || currentSources[0] || null;
+
+  // Resolve subtitles from the episode-level health result first, then source metadata
+  const currentServerStatus = currentServer
+    ? getSourceStatus(currentServer, resolvedCategoryKey)
+    : null;
   const subtitles =
-    currentServer?.subtitles || activeCatConfig?.subtitles || [];
+    (typeof currentServerStatus === "object" && currentServerStatus?.subtitles?.length > 0
+      ? currentServerStatus.subtitles
+      : null) ??
+    currentServer?.subtitles ??
+    activeCatConfig?.subtitles ??
+    [];
 
   // Determine alternative available category if currently chosen category is upcoming/delayed
   let availableAlternative = null;
@@ -898,9 +923,22 @@ function WatchPage() {
     if (failedServerId) {
       recordServerFailure(failedServerId);
       setTriedServerIds((prev) => new Set([...prev, failedServerId]));
+      // Mark this exact episode+server as UNAVAILABLE in the health service
+      // so it is skipped in future rankings for this session
+      try {
+        reportRuntimePlaybackIssue({
+          serverId: failedServerId,
+          type,
+          id,
+          season,
+          episode,
+          categoryKey: resolvedCategoryKey,
+          issueType: "unavailable",
+        });
+      } catch (_) {}
     }
 
-    // Find next untried source
+    // Find next untried source from ranked list
     const nextIndex = currentSources.findIndex(
       (src, idx) => idx > serverIdx && !triedServerIds.has(src.id)
     );
@@ -1007,7 +1045,13 @@ function WatchPage() {
 
         {/* ── Player Frame ── */}
         <div className="player-shell">
-          {isTrailerActive && trailerUrl ? (
+          {isChecking && !isTrailerActive ? (
+            <div className="player-all-failed-overlay">
+              <LoaderCircle size={38} className="spin" style={{ marginBottom: "1rem" }} />
+              <h3>Finding Best Stream...</h3>
+              <p>Validating servers &amp; checking subtitles for this episode.</p>
+            </div>
+          ) : isTrailerActive && trailerUrl ? (
             <EnhancedEmbedPlayer
               server={{ url: trailerUrl }}
               serverName="Official HD Trailer"

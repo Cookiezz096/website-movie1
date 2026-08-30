@@ -43,7 +43,8 @@ export default function StreamingCategory({
     const srcStatus = getSourceStatus
       ? getSourceStatus(src, categoryKey)
       : src.health ?? SERVER_HEALTH.WORKING;
-    return isServerPlayable(srcStatus);
+    const healthStr = typeof srcStatus === "object" ? srcStatus.health : srcStatus;
+    return isServerPlayable(healthStr);
   });
 
   const offlineCount = allSources.length - sources.length;
@@ -61,13 +62,15 @@ export default function StreamingCategory({
       ? getSourceStatus(source, categoryKey)
       : source.health ?? SERVER_HEALTH.WORKING;
 
+    const healthStr = typeof srcStatus === "object" ? srcStatus.health : srcStatus;
+
     if (
-      srcStatus === SERVER_HEALTH.WORKING ||
-      srcStatus === SERVER_HEALTH.UNVERIFIED
+      healthStr === SERVER_HEALTH.WORKING ||
+      healthStr === SERVER_HEALTH.UNVERIFIED
     ) {
       return null;
     }
-    if (srcStatus === SERVER_HEALTH.DEGRADED) {
+    if (healthStr === SERVER_HEALTH.DEGRADED) {
       return (
         <AlertTriangle
           size={10}
@@ -76,7 +79,7 @@ export default function StreamingCategory({
         />
       );
     }
-    if (srcStatus === SERVER_HEALTH.UNAVAILABLE) {
+    if (healthStr === SERVER_HEALTH.UNAVAILABLE) {
       return (
         <AlertTriangle
           size={10}
@@ -85,7 +88,7 @@ export default function StreamingCategory({
         />
       );
     }
-    if (srcStatus === SERVER_HEALTH.OFFLINE) {
+    if (healthStr === SERVER_HEALTH.OFFLINE) {
       return (
         <WifiOff
           size={10}
@@ -95,6 +98,19 @@ export default function StreamingCategory({
       );
     }
     return null;
+  }
+
+  function hasEnglishSub(source) {
+    const srcStatus = getSourceStatus
+      ? getSourceStatus(source, categoryKey)
+      : null;
+    if (typeof srcStatus === "object" && srcStatus.englishSubtitle) return true;
+    if (Array.isArray(source.subtitles)) {
+      return source.subtitles.some(
+        (s) => s.languageCode?.toLowerCase() === "en" || s.language?.toLowerCase().includes("english")
+      );
+    }
+    return false;
   }
 
   return (
@@ -173,6 +189,9 @@ export default function StreamingCategory({
                     <span className={`server-pill-badge ${badgeClass}`}>
                       {badge}
                     </span>
+                  )}
+                  {hasEnglishSub(srv) && (
+                    <span className="server-eng-sub-badge" title="English subtitles verified">🔤 EN</span>
                   )}
                   {getHealthIcon(srv)}
                   {isServerActive && (
