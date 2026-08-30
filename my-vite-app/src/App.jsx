@@ -731,6 +731,14 @@ function WatchPage() {
         });
     }
   }, [type, id, season, media?.number_of_seasons]);
+  const pageTitle = media?.title || media?.name;
+  // Update browser tab title with Anikai branding
+  useEffect(() => {
+    if (pageTitle) {
+      document.title = `${pageTitle} - Anikai`;
+    }
+    return () => { document.title = "Anikai - Watch Anime & Movies"; };
+  }, [pageTitle]);
 
   if (error)
     return (
@@ -831,13 +839,6 @@ function WatchPage() {
   }
 
   const title = media.title || media.name;
-  // Update browser tab title with Anikai branding
-  useEffect(() => {
-    if (title) {
-      document.title = `${title} - Anikai`;
-    }
-    return () => { document.title = "Anikai - Watch Anime & Movies"; };
-  }, [title]);
   const releaseYear = (
     media.release_date ||
     media.first_air_date ||
